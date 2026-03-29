@@ -1,0 +1,10 @@
+manifestVersion: 1
+name: "@keeb/ollama"
+version: "2026.03.28.1"
+description: "Ollama LLM integration (generate, batch generate)"
+labels:
+  - ollama
+  - llm
+  - ai
+models:
+  - ollama.ts
