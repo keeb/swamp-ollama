@@ -21,6 +21,37 @@ const ResultSchema = z.object({
   duration: z.number().describe("Generation time in ms"),
 });
 
+export async function ollamaGenerate(
+  ollamaUrl: string,
+  model: string,
+  prompt: string,
+  input: string,
+): Promise<string> {
+  const resp = await fetch(`${ollamaUrl}/api/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model,
+      messages: [{ role: "user", content: `${prompt}\n\n${input}` }],
+      stream: false,
+      options: { num_predict: 1024 },
+      think: false,
+    }),
+  });
+
+  if (!resp.ok) {
+    throw new Error(`Ollama error (${resp.status}): ${await resp.text()}`);
+  }
+
+  // deno-lint-ignore no-explicit-any
+  const json: any = await resp.json();
+  let raw = (json.message?.content ?? "").trim();
+  if (raw.startsWith("```")) {
+    raw = raw.replace(/^```(?:json)?\n?/, "").replace(/\n?```$/, "");
+  }
+  return raw;
+}
+
 export const model = {
   type: "@keeb/ollama",
   version: "2026.03.28.1",
@@ -45,37 +76,23 @@ export const model = {
           .optional()
           .describe("Resource instance name (defaults to slugified input)"),
       }),
-      execute: async (args, context) => {
+      execute: async (
+        args: { prompt: string; input: string; instanceName?: string },
+        // deno-lint-ignore no-explicit-any
+        context: any,
+      ) => {
         const { ollamaUrl, model: ollamaModel } = context.globalArgs;
 
         const start = Date.now();
-        const resp = await fetch(`${ollamaUrl}/api/generate`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            model: ollamaModel,
-            prompt: `${args.prompt}\n\n${args.input}`,
-            stream: false,
-            options: { num_predict: 1024 },
-            think: false,
-          }),
-        });
-
-        if (!resp.ok) {
-          throw new Error(
-            `Ollama error (${resp.status}): ${await resp.text()}`,
-          );
-        }
-
-        const json = await resp.json();
+        const raw = await ollamaGenerate(
+          ollamaUrl,
+          ollamaModel,
+          args.prompt,
+          args.input,
+        );
         const duration = Date.now() - start;
 
-        let raw = (json.response ?? "").trim();
-        if (raw.startsWith("```")) {
-          raw = raw.replace(/^```(?:json)?\n?/, "").replace(/\n?```$/, "");
-        }
-
-        let parsed;
+        let parsed: Record<string, unknown> | undefined;
         try {
           parsed = JSON.parse(raw);
         } catch {
@@ -99,6 +116,41 @@ export const model = {
       },
     },
 
+    unload: {
+      description: "Unload the model from VRAM to free GPU memory",
+      arguments: z.object({}),
+      // deno-lint-ignore no-explicit-any
+      execute: async (_args: any, context: any) => {
+        const { ollamaUrl, model: ollamaModel } = context.globalArgs;
+
+        const resp = await fetch(`${ollamaUrl}/api/chat`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model: ollamaModel,
+            keep_alive: 0,
+          }),
+        });
+
+        if (!resp.ok) {
+          throw new Error(
+            `Ollama error (${resp.status}): ${await resp.text()}`,
+          );
+        }
+
+        context.logger.info(`Unloaded ${ollamaModel} from VRAM`);
+
+        const handle = await context.writeResource("result", "unload", {
+          input: "unload",
+          raw: "model unloaded",
+          model: ollamaModel,
+          duration: 0,
+        });
+
+        return { dataHandles: [handle] };
+      },
+    },
+
     generate_batch: {
       description:
         "Send multiple inputs through the same prompt (factory: one resource per input)",
@@ -108,40 +160,36 @@ export const model = {
           .array(z.string())
           .describe("List of inputs to process"),
       }),
-      execute: async (args, context) => {
+      execute: async (
+        args: { prompt: string; inputs: string[] },
+        // deno-lint-ignore no-explicit-any
+        context: any,
+      ) => {
         const { ollamaUrl, model: ollamaModel } = context.globalArgs;
-        const handles = [];
+        // deno-lint-ignore no-explicit-any
+        const handles: any[] = [];
 
         for (const input of args.inputs) {
           const start = Date.now();
-          const resp = await fetch(`${ollamaUrl}/api/generate`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              model: ollamaModel,
-              prompt: `${args.prompt}\n\n${input}`,
-              stream: false,
-              options: { num_predict: 1024 },
-              think: false,
-            }),
-          });
 
-          if (!resp.ok) {
+          let raw: string;
+          try {
+            raw = await ollamaGenerate(
+              ollamaUrl,
+              ollamaModel,
+              args.prompt,
+              input,
+            );
+          } catch (err) {
             context.logger.error(
-              `Ollama error for "${input}": ${resp.status}`,
+              `Ollama error for "${input}": ${err}`,
             );
             continue;
           }
 
-          const json = await resp.json();
           const duration = Date.now() - start;
 
-          let raw = (json.response ?? "").trim();
-          if (raw.startsWith("```")) {
-            raw = raw.replace(/^```(?:json)?\n?/, "").replace(/\n?```$/, "");
-          }
-
-          let parsed;
+          let parsed: Record<string, unknown> | undefined;
           try {
             parsed = JSON.parse(raw);
           } catch {
