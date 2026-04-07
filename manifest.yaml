@@ -1,6 +1,6 @@
 manifestVersion: 1
 name: "@keeb/ollama"
-version: "2026.04.02.1"
+version: "2026.04.06.1"
 description: "Ollama LLM integration (generate, batch generate, unload)"
 labels:
   - ollama
@@ -8,3 +8,5 @@ labels:
   - ai
 models:
   - ollama.ts
+skills:
+  - ollama
